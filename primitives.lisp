@@ -25,35 +25,46 @@
 
 (in-package :stumpwm)
 
-#+ecl (require "clx")
-
 (export '(*suppress-abort-messages*
           *suppress-frame-indicator*
           *suppress-window-placement-indicator*
           *timeout-wait*
+          *timeout-wait-multiline*
           *timeout-frame-indicator-wait*
           *frame-indicator-text*
           *frame-indicator-timer*
           *message-window-timer*
+          *hooks-enabled-p*
           *command-mode-start-hook*
           *command-mode-end-hook*
           *urgent-window-hook*
           *new-window-hook*
+          *new-head-hook*
           *destroy-window-hook*
           *focus-window-hook*
           *place-window-hook*
+          *pre-thread-hook*
           *start-hook*
+          *restart-hook*
+          *quit-hook*
           *internal-loop-hook*
           *event-processing-hook*
           *focus-frame-hook*
           *new-frame-hook*
           *split-frame-hook*
+          *remove-split-hook*
           *message-hook*
           *top-level-error-hook*
           *focus-group-hook*
           *key-press-hook*
           *root-click-hook*
+          *new-mode-line-hook*
+          *destroy-mode-line-hook*
           *mode-line-click-hook*
+          *pre-command-hook*
+          *post-command-hook*
+          *selection-notify-hook*
+          *menu-selection-hook*
           *display*
           *shell-program*
           *maxsize-border-width*
@@ -63,7 +74,12 @@
           *window-events*
           *window-parent-events*
           *message-window-padding*
+          *message-window-y-padding*
+          *message-window-margin*
+          *message-window-y-margin*
           *message-window-gravity*
+          *message-window-real-gravity*
+          *message-window-input-gravity*
           *editor-bindings*
           *input-window-gravity*
           *normal-gravity*
@@ -121,16 +137,62 @@
           define-frame-preference
           redirect-all-output
           remove-hook
+          remove-all-hooks
           run-hook
           run-hook-with-args
           command-mode-start-message
           command-mode-end-message
           split-string
-	  with-restarts-menu
+          with-restarts-menu
           with-data-file
-	  move-to-head))
+          move-to-head
+          format-expand
+
+          ;; Frame accessors
+          frame-x
+          frame-y
+          frame-width
+          frame-height
+
+          ;; Screen accessors
+          screen-heads
+          screen-root
+          screen-focus
+          screen-float-focus-color
+          screen-float-unfocus-color
+
+          ;; Window states
+          +withdrawn-state+
+          +normal-state+
+          +iconic-state+
+
+          ;; Modifiers
+          modifiers
+          modifiers-p
+          modifiers-alt
+          modifiers-altgr
+          modifiers-super
+          modifiers-meta
+          modifiers-hyper
+          modifiers-numlock
+          ;; Conditions
+          stumpwm-condition
+          stumpwm-error
+          stumpwm-warning
+
+          ;; Completion Options
+          *maximum-completions*
+
+          ;; Minor mode keymaps
+          *minor-mode-maps*))
 
 
+;;; Completions
+(defvar *maximum-completions* 100
+  "Maximum number of completions to show in interactive prompts. Setting
+  this too high can crash the completion process due to drawing too far
+  off screen.")
+
 ;;; Message Timer
 (defvar *suppress-abort-messages* nil
   "Suppress abort message when non-nil.")
@@ -138,6 +200,10 @@
 (defvar *timeout-wait* 5
   "Specifies, in seconds, how long a message will appear for. This must
 be an integer.")
+
+(defvar *timeout-wait-multiline* nil
+  "Specifies, in seconds, how long a message will more than one line will
+appear for. This must be an integer. If falsy, default to *timeout-wait*.")
 
 (defvar *timeout-frame-indicator-wait* 1
   "The amount of time a frame indicator timeout takes.")
@@ -181,16 +247,15 @@ be an integer.")
   "The background color of the grabbed pointer.")
 
 ;;; Hooks
-
 (defvar *command-mode-start-hook* '(command-mode-start-message)
-  "A hook called whenever command mode is started")
+  "A hook called whenever command mode is started.")
 
 (defvar *command-mode-end-hook* '(command-mode-end-message)
-  "A hook called whenever command mode is ended")
+  "A hook called whenever command mode is ended.")
 
 (defvar *urgent-window-hook* '()
   "A hook called whenever a window sets the property indicating that
-  it demands the user's attention")
+  it demands the user's attention. Called with the window as an argument.")
 
 (defvar *map-window-hook* '()
   "A hook called whenever a window is mapped.")
@@ -201,10 +266,11 @@ be an integer.")
 (defvar *new-window-hook* '()
   "A hook called whenever a window is added to the window list. This
 includes a genuinely new window as well as bringing a withdrawn window
-back into the window list.")
+back into the window list. Called with the window as an argument.")
 
 (defvar *destroy-window-hook* '()
-  "A hook called whenever a window is destroyed or withdrawn.")
+  "A hook called whenever a window is destroyed or withdrawn.
+Called with the window as an argument.")
 
 (defvar *focus-window-hook* '()
   "A hook called when a window is given focus. It is called with 2
@@ -212,10 +278,19 @@ arguments: the current window and the last window (could be nil).")
 
 (defvar *place-window-hook* '()
   "A hook called whenever a window is placed by rule. Arguments are
-window group and frame")
+window, group and frame.")
+
+(defvar *pre-thread-hook* '()
+  "A hook called before any threads are started. Useful if you need to fork.")
 
 (defvar *start-hook* '()
   "A hook called when stumpwm starts.")
+
+(defvar *quit-hook* '()
+  "A hook called when stumpwm quits.")
+
+(defvar *restart-hook* '()
+  "A hook called when stumpwm restarts.")
 
 (defvar *internal-loop-hook* '()
   "A hook called inside stumpwm's inner loop.")
@@ -229,12 +304,16 @@ window group and frame")
 called with 2 arguments: the current frame and the last frame.")
 
 (defvar *new-frame-hook* '()
-  "A hook called when a new frame is created. the hook is called with
+  "A hook called when a new frame is created. The hook is called with
 the frame as an argument.")
 
 (defvar *split-frame-hook* '()
   "A hook called when a frame is split. the hook is called with
 the old frame (window is removed), and two new frames as arguments.")
+
+(defvar *remove-split-hook* '()
+  "A hook called when a split is removed. the hook is called with
+the current frame and removed frame as arguments.")
 
 (defvar *message-hook* '()
   "A hook called whenever stumpwm displays a message. The hook
@@ -259,10 +338,43 @@ sequence it is a part of, and command value bound to the key.")
 window. Called with 4 arguments, the screen containing the root
 window, the button clicked, and the x and y of the pointer.")
 
+(defvar *click-hook* '()
+  "A hook called whenever there is a mouse click.
+Called with 4 arguments, the screen containing the
+window (or nil if there isn't one), the button clicked,
+and the x and y of the pointer.")
+
+(defvar *new-mode-line-hook* '()
+  "Called whenever the mode-line is created. It is called with argument,
+the mode-line")
+
+(defvar *destroy-mode-line-hook* '()
+  "Called whenever the mode-line is destroyed. It is called with argument,
+the mode-line")
+
 (defvar *mode-line-click-hook* '()
   "Called whenever the mode-line is clicked. It is called with 4 arguments,
 the mode-line, the button clicked, and the x and y of the pointer.")
 
+(defvar *pre-command-hook* '()
+  "Called before a command is called. It is called with 1 argument:
+the command as a symbol.")
+
+(defvar *post-command-hook* '()
+  "Called after a command is called. It is called with 1 argument:
+the command as a symbol.")
+
+(defvar *selection-notify-hook* '()
+  "Called after a :selection-notify event is processed. It is called
+with 1 argument: the selection as a string.")
+
+(defvar *menu-selection-hook* '()
+  "Called after an item is selected in the windows menu. It is called
+with 1 argument: the menu.")
+
+(defvar *new-head-hook* '()
+  "A hook called whenever a head is added. It is called with 2 arguments: the
+ new head and the current screen.")
 ;; Data types and globals used by stumpwm
 
 (defvar *display* nil
@@ -282,6 +394,9 @@ the mode-line, the button clicked, and the x and y of the pointer.")
 
 (defvar *text-color* "white"
   "The color of message text.")
+
+(defvar *draw-in-color* t
+  "When NIL color formatters are ignored.")
 
 (defvar *menu-maximum-height* nil
   "Defines the maxium number of lines to display in the menu before enabling
@@ -353,8 +468,21 @@ Include only those we are ready to support.")
 (defvar *message-window-padding* 5
   "The number of pixels that pad the text in the message window.")
 
+(defvar *message-window-y-padding* 0
+  "The number of pixels that pad the text in the message window vertically.")
+
+(defvar *message-window-margin* 0
+  "The number of pixels (i.e. the gap) between the message window and the
+   horizontal edges of the head. The margin is disregarded if it takes more
+   space than is available.")
+
+(defvar *message-window-y-margin* 0
+  "The number of pixels (i.e. the gap) between the message window and the
+   vertical edges of the head. The margin is disregarded if it takes more
+   space than is available.")
+
 (defvar *message-window-gravity* :top-right
-  "This variable controls where the message window appears. The follow
+  "This variable controls where the message window appears. The following
 are valid values.
 @table @asis
 @item :top-left
@@ -362,6 +490,25 @@ are valid values.
 @item :bottom-left
 @item :bottom-right
 @item :center
+@item :top
+@item :left
+@item :right
+@item :bottom
+@end table")
+
+(defvar *message-window-input-gravity* :top-left
+  "This variable controls where the message window appears
+when the input window is being displayed. The following are valid values.
+@table @asis
+@item :top-left
+@item :top-right
+@item :bottom-left
+@item :bottom-right
+@item :center
+@item :top
+@item :left
+@item :right
+@item :bottom
 @end table")
 
 ;; line editor
@@ -369,7 +516,7 @@ are valid values.
   "A list of key-bindings for line editing.")
 
 (defvar *input-window-gravity* :top-right
-  "This variable controls where the input window appears. The follow
+  "This variable controls where the input window appears. The following
 are valid values.
 @table @asis
 @item :top-left
@@ -377,6 +524,10 @@ are valid values.
 @item :bottom-left
 @item :bottom-right
 @item :center
+@item :top
+@item :left
+@item :right
+@item :bottom
 @end table")
 
 ;; default values. use the set-* functions to these attributes
@@ -384,7 +535,7 @@ are valid values.
 (defparameter +default-background-color+ "Black")
 (defparameter +default-window-background-color+ "Black")
 (defparameter +default-border-color+ "White")
-(defparameter +default-font-name+ "9x15bold")
+(defparameter +default-font-name+ "9x15")
 (defparameter +default-focus-color+ "White")
 (defparameter +default-unfocus-color+ "Black")
 (defparameter +default-float-focus-color+ "Orange")
@@ -396,6 +547,7 @@ are valid values.
 (defvar *maxsize-gravity* :center)
 (defvar *transient-gravity* :center)
 
+(declaim (type (member :message :break :abort) *top-level-error-action*))
 (defvar *top-level-error-action* :abort
   "If an error is encountered at the top level, in
 STUMPWM-INTERNAL-LOOP, then this variable decides what action
@@ -405,7 +557,7 @@ and to *standard-output*.
 Valid values are :message, :break, :abort. :break will break to the
 debugger. This can be problematic because if the user hit's a
 mapped key the ENTIRE keyboard will be frozen and you will have
-to login remotely to regain control. :abort quits stumpmwm.")
+to login remotely to regain control. :abort quits stumpwm.")
 
 (defvar *window-name-source* :title
   "This variable controls what is used for the window's name. The default is @code{:title}.
@@ -421,66 +573,189 @@ Use the window's resource class.
 Use the window's resource name.
 @end table")
 
-(defstruct frame
-  (number nil :type integer)
-  x
-  y
-  width
-  height
-  window)
+(defclass swm-class ()
+  ((new-objects
+    :initform nil
+    :accessor swm-class-new-objects
+    :allocation :class
+    :documentation
+"Track all newly created objects in order to mix in the appropriate minor modes
+when they are touched")))
 
-(defstruct (head (:include frame))
-  ;; point back to the screen this head belongs to
-  screen
-  ;; a bar along the top or bottom that displays anything you want.
-  mode-line)
+(defmethod initialize-instance :after ((obj swm-class) &key &allow-other-keys)
+  ;; Register all newly created objects so that they can have the relevant minor
+  ;; modes autoenabled.
+  (pushnew obj (swm-class-new-objects obj) :test #'eq))
 
-(defclass screen ()
-  ((id :initform nil :accessor screen-id)
-   (host :initform nil :accessor screen-host)
-   (number :initform nil :accessor screen-number)
-   (heads :initform nil :accessor screen-heads :documentation
-    "heads of screen")
-   (groups :initform nil :accessor screen-groups :documentation
-    "the list of groups available on this screen")
-   (current-group :initform nil :accessor screen-current-group)
+(defgeneric print-swm-object (object stream)
+  (:method (object stream)
+    (format stream "~A" (type-of object))))
+
+(defmethod print-object ((object swm-class) stream)
+  (print-unreadable-object (object stream)
+    (print-swm-object object stream)
+    (when-let ((minor-modes (list-minor-modes object)))
+      (format stream " :MINOR-MODES ~A" minor-modes))))
+
+(defun make-swm-class-instance (class &rest initargs)
+  "Make an instance of a StumpWM class and autoenable any relevant minor
+modes. CLASS must be a symbol denoting a class which descends, directly or
+indirectly, from swm-class. INITARGS must be all initargs one would pass to
+make-instance."
+  ;; This is implemented as a function instead of as an after method for
+  ;; initialize-instance because autoenabling a minor mode involves changing the
+  ;; class of the object, which is implied to be undefined behavior if called
+  ;; within a method which accesses the objects slots.
+  (declare (special *active-global-minor-modes*))
+  (let ((object (apply #'make-instance class initargs)))
+    (prog1 object
+      (loop for class in *active-global-minor-modes*
+            when (typep object (scope-type (minor-mode-scope class)))
+              do (autoenable-minor-mode class object))
+      (setf (swm-class-new-objects object)
+            (remove object (swm-class-new-objects object) :test #'eq)))))
+
+(defmacro define-swm-class (class-name superclasses slots &rest options)
+  "Define a class and a method for DYNAMIC-MIXINS:REPLACE-CLASS which specializes
+upon the class and replaces it. If SUPERCLASSES is NIL then (SWM-CLASS) is used."
+  (unless superclasses (setq superclasses '(swm-class)))
+  `(progn
+     (defclass ,class-name ,superclasses ,slots ,@options)
+     (defmethod dynamic-mixins-swm:replace-class ((object ,class-name) new &rest r)
+       (apply #'dynamic-mixins-swm:replace-class-in-mixin
+              object new ',class-name r))))
+
+(define-swm-class frame ()
+  ((number
+    :initform nil
+    :initarg :number
+    :accessor frame-number)
+   (x
+    :initform nil
+    :accessor frame-x
+    :initarg :x)
+   (y
+    :initform nil
+    :accessor frame-y
+    :initarg :y)
+   (width
+    :initform nil
+    :accessor frame-width
+    :initarg :width)
+   (height
+    :initform nil
+    :accessor frame-height
+    :initarg :height)
+   (window
+    :initform nil
+    :accessor frame-window
+    :initarg :window)))
+
+(defmethod print-swm-object ((object frame) stream)
+  (format stream "FRAME ~d ~a ~d ~d ~d ~d"
+          (frame-number object) (frame-window object) (frame-x object) (frame-y object) (frame-width object) (frame-height object)))
+
+(defun frame-p (object)
+  (typep object 'frame))
+
+(defun make-frame (&rest rest &key number x y width height window)
+  (declare (ignore number x y width height window))
+  (apply 'make-swm-class-instance 'frame rest))
+
+(defun copy-frame (instance)
+  (make-swm-class-instance 'frame :number (frame-number instance)
+                                  :x (frame-x instance)
+                                  :y (frame-y instance)
+                                  :width (frame-width instance)
+                                  :height (frame-height instance)
+                                  :window (frame-window instance)))
+
+(define-swm-class head (frame)
+  ((name
+    :initform ""
+    :accessor head-name
+    :initarg :name)))
+
+(defmethod print-swm-object ((object head) stream)
+  (write-string "HEAD-" stream)
+  (call-next-method))
+
+;; duplicate frame accessors for heads.
+(macrolet ((define-head-accessor (name)
+             (let ((pkg (find-package :stumpwm)))
+               `(progn
+                  (defgeneric ,(intern (format nil "HEAD-~A" (symbol-name name)) pkg) (head)
+                    (:method ((head head))
+                      (,(intern (format nil "FRAME-~A" (symbol-name name)) pkg) head)))
+                  
+                  (defmethod (setf ,(intern (format nil "HEAD-~A" (symbol-name name)) pkg))
+                      (new (head head))
+                    (setf (,(intern (format nil "FRAME-~A" (symbol-name name)) pkg) head)
+                          new))))))
+  (define-head-accessor number)
+  (define-head-accessor x)
+  (define-head-accessor y)
+  (define-head-accessor width)
+  (define-head-accessor height)
+  (define-head-accessor window))
+
+(defun head-p (object)
+  (typep object 'head))
+
+(defun make-head (&rest rest &key number x y width height window name)
+  (declare (ignore number x y width height window name))
+  (apply 'make-swm-class-instance 'head rest))
+
+(defun copy-head (instance)
+  (make-swm-class-instance 'head :number (frame-number instance)
+                                 :x (frame-x instance)
+                                 :y (frame-y instance)
+                                 :width (frame-width instance)
+                                 :height (frame-height instance)
+                                 :window (frame-window instance)
+                                 :name (head-name instance)))
+
+(define-swm-class screen ()
+  ((id :initarg :id :reader screen-id)
+   (host :initarg :host :reader screen-host)
+   (number :initarg :number :reader screen-number)
+   (heads :initform () :accessor screen-heads)
+   (groups :initform () :accessor screen-groups)
+   (current-group :accessor screen-current-group)
    ;; various colors (as returned by alloc-color)
-   (border-color :initform nil :accessor screen-border-color)
-   (fg-color :initform nil :accessor screen-fg-color)
-   (bg-color :initform nil :accessor screen-bg-color)
-   (win-bg-color :initform nil :accessor screen-win-bg-color)
-   (focus-color :initform nil :accessor screen-focus-color)
-   (unfocus-color :initform nil :accessor screen-unfocus-color)
-   (float-focus-color :initform nil :accessor screen-float-focus-color)
-   (float-unfocus-color :initform nil :accessor screen-float-unfocus-color)
-   (msg-border-width :initform nil :accessor screen-msg-border-width)
-   (frame-outline-width :initform nil :accessor screen-frame-outline-width)
-   (font :initform nil :accessor screen-font)
-   (mapped-windows :initform nil :accessor screen-mapped-windows :documentation
+   (border-color :initarg :border-color :accessor screen-border-color)
+   (fg-color :initarg :fg-color :accessor screen-fg-color)
+   (bg-color :initarg :bg-color :accessor screen-bg-color)
+   (win-bg-color :initarg :win-bg-color :accessor screen-win-bg-color)
+   (focus-color :initarg :focus-color :accessor screen-focus-color)
+   (unfocus-color :initarg :unfocus-color :accessor screen-unfocus-color)
+   (float-focus-color :initarg :float-focus-color :accessor screen-float-focus-color)
+   (float-unfocus-color :initarg :float-unfocus-color :accessor screen-float-unfocus-color)
+   (msg-border-width :initarg :msg-border-width :accessor screen-msg-border-width)
+   (frame-outline-width :initarg :frame-outline-width :accessor screen-frame-outline-width)
+   (fonts :initarg :fonts :accessor screen-fonts)
+   (mapped-windows :initform () :accessor screen-mapped-windows :documentation
     "A list of all mapped windows. These are the raw xlib:window's. window structures are stored in groups.")
-   (withdrawn-windows :initform nil :accessor screen-withdrawn-windows :documentation
+   (withdrawn-windows :initform () :accessor screen-withdrawn-windows :documentation
     "A list of withdrawn windows. These are of type stumpwm::window
 and when they're mapped again they'll be put back in the group
 they were in when they were unmapped unless that group doesn't
 exist, in which case they go into the current group.")
-   (urgent-windows :initform nil :accessor screen-urgent-windows :documentation
+   (urgent-windows :initform () :accessor screen-urgent-windows :documentation
     "a list of windows for which (window-urgent-p) currently true.")
-   (input-window :initform nil :accessor screen-input-window)
-
-   (key-window :initform nil :accessor screen-key-window :documentation
+   (input-window :initarg :input-window :reader screen-input-window)
+   (key-window :initarg :key-window :reader screen-key-window :documentation
     "the window that accepts further keypresses after a toplevel key has been pressed.")
-   (focus-window :initform nil :accessor screen-focus-window :documentation
+   (focus-window :initarg :focus-window :reader screen-focus-window :documentation
     "The window that gets focus when no window has focus")
-   ;;
-   (frame-window :initform nil :accessor screen-frame-window)
-   (frame-outline-gc :initform nil :accessor screen-frame-outline-gc)
+   (frame-window :initarg :frame-window :reader screen-frame-window)
+   (frame-outline-gc :initarg :frame-outline-gc :reader screen-frame-outline-gc)
    ;; color contexts
-   (message-cc :initform nil :accessor screen-message-cc)
-   (mode-line-cc :initform nil :accessor screen-mode-line-cc)
+   (message-cc :initarg :message-cc :reader screen-message-cc)
    ;; color maps
    (color-map-normal :initform nil :accessor screen-color-map-normal)
    (color-map-bright :initform nil :accessor screen-color-map-bright)
-   (ignore-msg-expose :initform nil :accessor screen-ignore-msg-expose :documentation
+   (ignore-msg-expose :initform 0 :accessor screen-ignore-msg-expose :documentation
     "used to ignore the first expose even when mapping the message window.")
    ;; the window that has focus
    (focus :initform nil :accessor screen-focus)
@@ -490,33 +765,27 @@ exist, in which case they go into the current group.")
    (last-msg-highlights :initform nil :accessor screen-last-msg-highlights)))
 
 (defstruct ccontext
+  screen
   win
   px
   gc
   default-fg
   default-bright
-  default-bg)
-
-(defun screen-message-window (screen)
-  (ccontext-win (screen-message-cc screen)))
-
-(defun screen-message-pixmap (screen)
-  (ccontext-px (screen-message-cc screen)))
-
-(defun screen-message-gc (screen)
-  (ccontext-gc (screen-message-cc screen)))
-
-(defmethod print-object ((object frame) stream)
-  (format stream "#S(frame ~d ~a ~d ~d ~d ~d)"
-          (frame-number object) (frame-window object) (frame-x object) (frame-y object) (frame-width object) (frame-height object)))
+  default-bg
+  fg
+  bg
+  brightp
+  reversep
+  color-stack
+  font)
 
 (defvar *window-number-map* "0123456789"
   "Set this to a string to remap the window numbers to something more convenient.")
 
-(defvar *group-number-map* "1234567890"
+(defvar *group-number-map* "123456789"
   "Set this to a string to remap the group numbers to something more convenient.")
 
-(defvar *frame-number-map* "0123456789abcdefghijklmnopqrstuvxwyz"
+(defvar *frame-number-map* "0123456789abcdefghijklmnopqrstuvwxyz"
   "Set this to a string to remap the frame numbers to more convenient keys.
 For instance,
 
@@ -528,10 +797,11 @@ supported. By default, the frame labels are the 36 (lower-case)
 alphanumeric characters, starting with numbers 0-9.")
 
 (defun get-frame-number-translation (frame)
-  "Given a frame return its number translation using *frame-number-map* as a char."
+  "Given a frame return its number translation using *frame-number-map* as a
+char."
   (let ((num (frame-number frame)))
-    (or (and (< num (length *frame-number-map*))
-             (char *frame-number-map* num))
+    (if (< num (length *frame-number-map*))
+        (char *frame-number-map* num)
         ;; translate the frame number to a char. FIXME: it loops after 9
         (char (prin1-to-string num) 0))))
 
@@ -549,8 +819,8 @@ alphanumeric characters, starting with numbers 0-9.")
 (defvar *modifiers* nil
   "A mapping from modifier type to x11 modifier.")
 
-(defmethod print-object ((object screen) stream)
-  (format stream "#S<screen ~s>" (screen-number object)))
+(defmethod print-swm-object ((object screen) stream)
+  (format stream "SCREEN ~s" (screen-number object)))
 
 (defvar *screen-list* '()
   "The list of screens managed by stumpwm.")
@@ -568,7 +838,7 @@ loads the rc file.")
 
 (defvar *interactivep* nil
   "True when a defcommand is executed from colon or a keybinding")
- 
+
 ;;; The restarts menu macro
 
 (defmacro with-restarts-menu (&body body)
@@ -585,30 +855,33 @@ chosen, resignal the error."
        ,@body)))
 
 ;;; Hook functionality
+(defvar *hooks-enabled-p* t
+  "Controls whether hooks will actually run or not")
 
 (defun run-hook-with-args (hook &rest args)
   "Call each function in HOOK and pass args to it."
-  (handler-case
-      (with-simple-restart (abort-hooks "Abort running the remaining hooks.")
-        (with-restarts-menu
+  (when *hooks-enabled-p*
+    (handler-case
+        (with-simple-restart (abort-hooks "Abort running the remaining hooks.")
+          (with-restarts-menu
             (dolist (fn hook)
               (with-simple-restart (continue-hooks "Continue running the remaining hooks.")
                 (apply fn args)))))
-    (t (c) (message "^B^1*Error on hook ^b~S^B!~% ^n~A" hook c) (values nil c))))
+      (t (c) (message "^B^1*Error on hook ^b~S^B!~% ^n~A" hook c) (values nil c)))))
 
 (defun run-hook (hook)
   "Call each function in HOOK."
   (run-hook-with-args hook))
 
 (defmacro add-hook (hook fn)
-  "Add @var{function} to the hook @var{hook-variable}. For example, to
+  "Add @var{function} to the @var{hook-variable}. For example, to
 display a message whenever you switch frames:
 
 @example
 \(defun my-rad-fn (to-frame from-frame)
   (stumpwm:message \"Mustard!\"))
 
-\(stumpmwm:add-hook stumpwm:*focus-frame-hook* 'my-rad-fn)
+\(stumpwm:add-hook stumpwm:*focus-frame-hook* 'my-rad-fn)
 @end example"
   `(setf ,hook (adjoin ,fn ,hook)))
 
@@ -616,24 +889,16 @@ display a message whenever you switch frames:
 "Remove the specified function from the hook."
   `(setf ,hook (remove ,fn ,hook)))
 
-;; Misc. utility functions
+(defmacro remove-all-hooks (hook)
+"Remove all functions from a hook"
+  `(setf ,hook NIL))
 
-(defun conc1 (list arg)
-  "Append arg to the end of list"
-  (nconc list (list arg)))
+;; Misc. utility functions
 
 (defun sort1 (list sort-fn &rest keys &key &allow-other-keys)
   "Return a sorted copy of list."
   (let ((copy (copy-list list)))
     (apply 'sort copy sort-fn keys)))
-
-(defun mapcar-hash (fn hash)
-  "Just like maphash except it accumulates the result in a list."
-  (let ((accum nil))
-    (labels ((mapfn (key val)
-               (push (funcall fn key val) accum)))
-      (maphash #'mapfn hash))
-    accum))
 
 (defun find-free-number (l &optional (min 0) dir)
   "Return a number that is not in the list l. If dir is :negative then
@@ -658,29 +923,11 @@ positive direction."
             (+ inc max)
             min))))
 
-(defun remove-plist (plist &rest keys)
-  "Remove the keys from the plist.
-Useful for re-using the &REST arg after removing some options."
-  (do (copy rest)
-      ((null (setq rest (nth-value 2 (get-properties plist keys))))
-       (nreconc copy plist))
-    (do () ((eq plist rest))
-      (push (pop plist) copy)
-      (push (pop plist) copy))
-    (setq plist (cddr plist))))
-
-(defun screen-display-string (screen &optional (assign t))
-  (format nil
-          (if assign "DISPLAY=~a:~d.~d" "~a:~d.~d")
-          (screen-host screen)
-          (xlib:display-display *display*)
-          (screen-id screen)))
-
 (defun split-seq (seq separators &key test default-value)
-  "split a sequence into sub sequences given the list of seperators."
+  "Split a sequence into subsequences given the list of seperators."
   (let ((seps separators))
     (labels ((sep (c)
-               (find c seps :test test)))
+               (position c seps :test test)))
       (or (loop for i = (position-if (complement #'sep) seq)
                 then (position-if (complement #'sep) seq :start j)
                 as j = (position-if #'sep seq :start (or i 0))
@@ -706,6 +953,17 @@ at the end of STRING, we don't include a null substring for that.
 Modifies the match data; use `save-match-data' if necessary."
   (split-seq string separators :test #'char= :default-value '("")))
 
+(defun match-all-regexps (regexps target-string &key (case-insensitive t))
+  "Return T if TARGET-STRING matches all regexps in REGEXPS.
+REGEXPS can be a list of strings (one regexp per element) or a single
+string which is split to obtain the individual regexps. "
+  (let* ((regexps (if (listp regexps)
+                      regexps
+                      (split-string regexps " "))))
+    (loop for pattern in regexps
+       always (let ((scanner (ppcre:create-scanner pattern
+                                                   :case-insensitive-mode case-insensitive)))
+                (ppcre:scan scanner target-string)))))
 
 (defun insert-before (list item nth)
   "Insert ITEM before the NTH element of LIST."
@@ -715,91 +973,153 @@ Modifies the match data; use `save-match-data' if necessary."
          (post (subseq list nth)))
     (nconc pre (list item) post)))
 
-(defvar *debug-level* 0
-  "Set this variable to a number > 0 to turn on debugging. The greater the number the more debugging output.")
-
-(defvar *debug-expose-events* nil
-  "Set this variable for a visual indication of expose events on internal StumpWM windows.")
-
-(defvar *debug-stream* *error-output*
-  "This is the stream debugging output is sent to. It defaults to
-*error-output*. It may be more convenient for you to pipe debugging
-output directly to a file.")
-
-(defun dformat (level fmt &rest args)
-  (when (>= *debug-level* level)
-    (multiple-value-bind (sec m h) (decode-universal-time (get-universal-time))
-      (format *debug-stream* "~2,'0d:~2,'0d:~2,'0d " h m sec))
-    ;; strip out non base-char chars quick-n-dirty like
-    (write-string (map 'string (lambda (ch)
-                                 (if (typep ch 'standard-char)
-                                     ch #\?))
-                       (apply 'format nil fmt args))
-                  *debug-stream*)
-    (force-output *debug-stream*)))
-
-(defvar *redirect-stream* nil
-  "This variable Keeps track of the stream all output is sent to when
-`redirect-all-output' is called so if it changes we can close it
-before reopening.")
-
-(defun redirect-all-output (file)
-  "Elect to redirect all output to the specified file. For instance,
-if you want everything to go to ~/stumpwm.d/debug-output.txt you would
-do:
-
-@example
-(redirect-all-output (data-dir-file \"debug-output\" \"txt\"))
-@end example
-"
-  (when (typep *redirect-stream* 'file-stream)
-    (close *redirect-stream*))
-  (setf *redirect-stream* (open file :direction :output :if-exists :append :if-does-not-exist :create)
-        *error-output*    *redirect-stream*
-        *standard-output* *redirect-stream*
-        *trace-output*    *redirect-stream*
-        *debug-stream*    *redirect-stream*))
-
 ;;; 
 ;;; formatting routines
-(defun format-expand (fmt-alist fmt &rest args)
-  (let* ((chars (coerce fmt 'list))
-         (output "")
-         (cur chars))
-    ;; FIXME: this is horribly inneficient
+
+(declaim (ftype (function (vector list list &key (:element-type (or cons symbol))) vector) replace-ranges))
+(defun replace-ranges (vec ranges replacements &key (element-type (array-element-type vec)))
+  "Return a new vector with all (`START' `END') pairs in @var{`RANGES'} replaced with the corresponding vector in
+the list @var{`REPLACEMENTS'}.
+
+If the keyword argument `ELEMENT-TYPE' is provided, the resulting vector is defined to have elements of that type.
+Ensure all replacement vectors are of compatible type or it will error, as it trusts this blindly.
+Otherwise, it uses the element type of `VEC' - to use replacements with arbitrary element types,
+set `ELEMENT-TYPE' to T.
+
+The lengths of the replacements do not matter, and only a single non-resizeable vector will
+be created for the result.
+
+Example using strings:
+@samp{(replace-ranges \"This is a test string with replacements.\"
+'((0 0) (10 14) (27 40))
+'(\"(Hi) \" \"simple\" \"three replaced sections.\"))} =>
+\"(Hi!) This is a simple string with three replaced sections.\"
+
+@samp{(replace-ranges \"A vector of characters, also known as a string.\"
+'((12 22) (40 47))
+'(#(\"not\" \"just\" \"one element type\")
+\"simple-vector.\") :element-type T)} =>
+#(#\A #\  #\v #\e #\c #\t #\o #\r #\  #\o #\f #\  \"not\" \"just\" \"one element type\" #\, #\
+#\a #\l #\s #\o #\  #\k #\n #\o #\w #\n #\  #\a #\s #\  #\a #\
+#\s #\i #\m #\p #\l #\e #\- #\v #\e #\c #\t #\o #\r #\.)"
+  (let* ((base-len (length vec))
+         (length (+ base-len
+                    (loop for prev-end = 0 then end
+                          for (start end) (integer integer) in ranges
+                          for replacement vector in replacements
+                          do (assert (>= end start prev-end) (start end)
+                                     "Ranges must be in numerical order and not overlap.")
+                          sum (- (length replacement) (- end start))))))
+    (declare (type integer length))
     (loop
-     (cond ((null cur)
-            (return-from format-expand output))
-           ;; if % is the last char in the string then it's a literal.
-           ((and (char= (car cur) #\%)
-                 (cdr cur))
-            (setf cur (cdr cur))
-            (let* ((tmp (loop while (and cur (char<= #\0 (car cur) #\9))
-                              collect (pop cur)))
-                   (len (and tmp (parse-integer (coerce tmp 'string))))
-                   ;; So that eg "%25^t" will trim from the left
-                   (from-left-p (when (char= #\^ (car cur)) (pop cur))))
-              (if (null cur)
-                  (format t "%~a~@[~a~]" len from-left-p)
-                  (let* ((fmt (cadr (assoc (car cur) fmt-alist :test 'char=)))
-                         (str (cond (fmt
-                                     ;; it can return any type, not jut as string.
-                                     (format nil "~a" (apply fmt args)))
-                                    ((char= (car cur) #\%)
-                                     (string #\%))
-                                    (t
-                                     (concatenate 'string (string #\%) (string (car cur)))))))
-                    ;; crop string if needed
-                    (setf output (concatenate 'string output
-                                              (cond ((null len) str)
-                                                    ((not from-left-p) ; Default behavior
-                                                     (subseq str 0 (min len (length str))))
-                                                    ;; New behavior -- trim from the left
-                                                    (t (subseq str (max 0 (- (length str) len)))))))
-                    (setf cur (cdr cur))))))
-           (t
-            (setf output (concatenate 'string output (string (car cur)))
-                  cur (cdr cur)))))))
+      ;; needs previous start as well
+      with composed vector = (make-array length :element-type element-type)
+
+      ;; Offset is to keep indexes synchronized between COMPOSED and STR
+      for offset integer = 0 then (+ offset (- (length replacement) (- end start)))
+      for prev-end integer = 0 then end
+      for (start end) (integer integer) in ranges
+      for replacement vector in replacements
+      ;; Insert text between last replacement up until current, unless there is none
+      unless (zerop (- start prev-end)) do
+        (replace composed vec
+                 :start1 (+ prev-end offset)
+                 :start2 prev-end :end2 start)
+
+      do (replace composed replacement
+                  :start1 (+ start offset))
+         ;; Add end of STR if necessary
+      finally (unless (= prev-end base-len)
+                (replace composed vec
+                         :start1 (+ end offset)
+                         :start2 end))
+              (return composed))))
+
+(defun string-shorten (str &optional trim-count trim-end-p)
+  "Given a vector `STR', returns the string trimmed to length `TRIM-COUNT'. If `TRIM-END-P', trims from the end instead.
+
+Does not trim if `TRIM-COUNT' is nil, and returns the empty string if it is zero."
+  (if trim-count
+      (let ((length (length str)))
+        (cond ((> trim-count length) str)
+              ((zerop trim-count) (copy-seq ""))
+              (trim-end-p (subseq str (- length trim-count)))
+              (t (subseq str 0 trim-count))))
+      str))
+
+(defun format-expand (fmt-alist str &rest args)
+  (let ((length (1- (length str))) (start 0) (end 0)
+        expander-char trim-count trim-end-p)
+    (labels ((read-next-expander ()
+               (when (> length end)
+                 (if-let ((pos (position #\% str :start end :end length :test #'char=)))
+                   (let ((percents (if-let ((end-percents (position #\% str :start (1+ pos) :end (1+ length) :test #'char/=)))
+                                     (- end-percents pos)
+                                     ;; nil means it /didn't/ find a char that wasn't a percent, so it must be percents allll
+                                     ;; the way till the end.
+                                     (1+ (- length pos)))))
+                     ;; If there's more than one expander, just handle escapes and then have the next loop
+                     ;; handle the actual expander itself, if there is one.
+                     (if (= 1 percents)
+                         (let* ((offset-pos (1+ pos))
+                                (next-char (char str offset-pos)))
+                           (let* ((trim-count (when (digit-char-p next-char)
+                                                  ;; Read till length of digits and parse it
+                                                  (let ((end-digits (position-if (complement #'digit-char-p) str :start offset-pos)))
+                                                    (prog1 (parse-integer str :start offset-pos :end end-digits)
+                                                      (incf offset-pos (- end-digits offset-pos))))))
+                                  (trim-end-p (when (char= (char str offset-pos) #\^)
+                                                (incf offset-pos) t)))
+                             ;; length pos is offset (after percents, past padding specifier and ^) + 1 (past expander-char)
+                             (values (char str offset-pos) pos (+ offset-pos 1) trim-count trim-end-p)))
+                         ;; Getting rid of odd part means that, if there's an unescaped percent, it's kept for next iter
+                         (let* ((escapes (floor percents 2))
+                                (end-escapes (+ pos (* escapes 2))))
+                           (values nil pos end-escapes escapes nil)))))))
+
+             (handle-expander ()
+               (if-let ((expander (second (assoc expander-char fmt-alist :test #'char=))))
+                 (string-shorten
+                  (let ((result (apply expander args)))
+                    ;; Original would already produce an error since #'string would fail to convert to string,
+                    ;; so this just adds the ability to handle a list of things uiop:strcat supports: chars, strings, and nil.
+                    ;; If that fails, /then/ you have an error.
+                    (etypecase result
+                      (string result)
+                      (atom (write-to-string result :escape nil))
+                      (list (apply #'uiop:strcat result))))
+                  trim-count trim-end-p)))
+             ;; Separated so it can be run in the initially clause.
+             (update-loop ()
+               (setf (values expander-char start end trim-count trim-end-p)
+                     (read-next-expander))))
+      (loop
+        ;; This can halve runtime is these cases
+        initially
+           (update-loop)
+           (cond ((not (and start end))
+                  (return str)) ; no expanders or escapes found
+                 ((and (zerop start) (= (1- end) length)) ; The string is /only/ an expander
+                  (return (if expander-char
+                              ;; Insert result or leave expander str
+                              ;; "%z" => "%z" when #\z has nothing assigned
+                              (or (handle-expander) str)
+                              ;; It's only percents, return trimmed (escaped)
+                              ;; "%%%%" => "%%"
+                              (string-shorten str trim-count trim-end-p)))))
+           ;; loop start, check before update is to handle the values from initially form
+        if expander-char
+          collect (list start end) into ranges
+        ;; Same as in cond, insert or leave in
+          and collect (or (handle-expander) (subseq str start end)) into replacements
+        else
+          ;; string-replace-ranges will effectively erase unescaped percents, by not bothering adding them.
+          collect (list (+ start trim-count) end) into ranges
+          and collect "" into replacements
+        end
+        do (update-loop)
+        while start ; While there are expanders/escapes, will always be a start pos.
+        finally (return (replace-ranges str ranges replacements :element-type 'character))))))
 
 (defvar *window-formatters* '((#\n window-map-number)
                               (#\s fmt-window-status)
@@ -819,7 +1139,7 @@ with the following formatting options:
 
 @table @asis
 @item %n
-Substitutes the windows number translated via *window-number-map*, if there
+Substitutes the window's number translated via *window-number-map*, if there
 are more windows than *window-number-map* then will use the window-number.
 @item %s
 Substitute the window's status. * means current window, + means last
@@ -839,7 +1159,12 @@ size. For instance, @samp{%20t} crops the window's title to 20
 characters.")
 
 (defvar *window-info-format* "%wx%h %n (%t)"
-  "The format used in the info command. @xref{*window-format*} for formatting details.")
+  "The format used in the info command. See
+  @var{*window-format*} for formatting details.")
+
+(defparameter *window-format-by-class* "%m%n %c %s%50t"
+  "The format used in the info winlist-by-class command. See
+ @var{*window-format*} for formatting details.")
 
 (defvar *group-formatters* '((#\n group-map-number)
                              (#\s fmt-group-status)
@@ -870,13 +1195,13 @@ The group's name.
 (defvar *list-hidden-groups* nil
   "Controls whether hidden groups are displayed by 'groups' and 'vgroups' commands")
 
-(defun font-height (font)
-  (+ (xlib:font-descent font)
-     (xlib:font-ascent font)))
+;; (defun font-height (font)
+;;   (+ (font-descent font)
+;;      (font-ascent font)))
 
 (defvar *x-selection* nil
-  "This holds stumpwm's current selection. It is generally set
-when killing text in the input bar.")
+  "This is a plist of stumpwm's current selections. The different properties are
+generally set when killing text in the input bar.")
 
 (defvar *last-command* nil
   "Set to the last interactive command run.")
@@ -889,10 +1214,10 @@ when killing text in the input bar.")
 recommended this is assigned using LET.")
 
 (defvar *suppress-echo-timeout* nil
-  "Assign this T and messages will not time out. It is recommended this is assigned using LET.")
+  "Assign this T and messages will not time out. It is recommended to assign this using LET.")
 
 (defvar *ignore-echo-timeout* nil
-  "Assign this T and the message time out won't be touched. It is recommended this is assigned using LET.")
+  "Assign this T and the message time out won't be touched. It is recommended to assign this using LET.")
 
 (defvar *run-or-raise-all-groups* t
   "When this is @code{T} the @code{run-or-raise} function searches all groups for a
@@ -1007,27 +1332,43 @@ will have no effect.")
   "List of rules governing window placement. Use define-frame-preference to
 add rules")
 
-(defmacro define-frame-preference (target-group &rest frame-rules)
+(defmacro define-frame-preference (target-group &body frame-rules)
   "Create a rule that matches windows and automatically places them in
-a specified group and frame. Each frame rule is a lambda list:
+a specified group and frame or converts them to floating windows. Each
+frame rule is a lambda list:
 @example
-\(frame-number raise lock &key create restore dump-name class instance type role title)
+\(frame-number raise lock &key from-group create restore dump-name class class-not
+instance instance-not type type-not role role-not title title-not
+match-properties-and-function match-properties-or-function)
 @end example
 
 @table @var
+@item target-group
+When nil, rule applies in the current group. When non nil, @var{lock} determines
+applicability of rule
+
 @item frame-number
-The frame number to send matching windows to
+The frame number to send matching windows to. If set to :float instead of a
+frame number, the window will be converted to a floating window. This is
+convenient for applications that should be launched as pop-ups.
 
 @item raise
 When non-nil, raise and focus the window in its frame
 
 @item lock
-When this is nil, this rule will only match when the current group
-matches @var{target-group}. When non-nil, this rule matches regardless
+When this is nil, this rule will only match when @var{target-group}
+matches the group designated by @var{from-group}.
+When non-nil, this rule matches regardless
 of the group and the window is sent to @var{target-group}. If
 @var{lock} and @var{raise} are both non-nil, then stumpwm will jump to
 the specified group and focus the matched window.
 
+@item from-group
+When @var{lock} is NIL, and this is non-NIL, this rule will only match
+when @var{target-group} matches @var{from-group}. This should be set
+to either a group name(a string), or an expression that returns a group(e.g (current-group)).
+When this is NIL, the rule matches if @var{target-group} matches
+the group the window is in, or the current group if the window has no group.
 @item create
 When non-NIL the group is created and eventually restored when the value of
 create is a group dump filename in *DATA-DIR*. Defaults to NIL.
@@ -1037,27 +1378,49 @@ When non-NIL the group is restored even if it already exists. This arg should
 be set to the dump filename to use for forced restore. Defaults to NIL
 
 @item class
-The window's class must match @var{class}.
+The windows class must match @var{class}.
+
+@item class-not
+The windows class must not match @var{class-not}
 
 @item instance
-The window's instance/resource name must match @var{instance}.
+The windows instance/resource name must match @var{instance}.
+
+@item instance-not
+The windows instance/resource name must not match @var{instance-not}.
 
 @item type
-The window's type must match @var{type}.
+The windows type must match @var{type}.
+
+@item type-not
+The windows type must not match @var{type-not}.
 
 @item role
-The window's role must match @var{role}.
+The windows role must match @var{role}.
+
+@item role-not
+The windows role must not match @var{role-not}.
 
 @item title
-The window's title must match @var{title}.
+The windows title must match @var{title}.
+
+@item title-not
+The windows title must not match @var{title-not}.
+
+@item match-properties-and-function
+A function that, if provided, must return true alongside the provided properties
+in order for the rule to match. This function takes one argument, the window. 
+Must be an unquoted symbol to be looked up at runtime. 
+
+@item match-properties-or-function
+A function that, if provided and returning true, will cause the rule to match
+regardless of whether the window properties match. Takes one argument, the window.
+Must be an unquoted symbol to be looked up at runtime. 
 @end table"
   (let ((x (gensym "X")))
     `(dolist (,x ',frame-rules)
        ;; verify the correct structure
-       (destructuring-bind (frame-number raise lock
-                                         &rest keys
-                                         &key create restore class instance type role title) ,x
-         (declare (ignore create restore class instance type role title))
+       (destructuring-bind (frame-number raise lock &rest keys) ,x
          (push (list* ,target-group frame-number raise lock keys)
                *window-placement-rules*)))))
 
@@ -1065,16 +1428,59 @@ The window's title must match @var{title}.
   "Clear all window placement rules."
   (setf *window-placement-rules* nil))
 
+(defvar *fullscreen-in-frame-p-window-functions* nil
+  "A alist of predicate functions for determining if a window should be
+fullscreen in frame.")
+
+(defun fullscreen-in-frame-p (win)
+  (some (lambda (r)
+          (let ((res (funcall (cdr r) win)))
+            (when res
+              (dformat 3 "Fullscreen in frame selector ~A matches window ~A"
+                       (car r) win))
+            res))
+        *fullscreen-in-frame-p-window-functions*))
+
+(defun add-fullscreen-in-frame-rule (name function &key shadow)
+  "Add a function to the fullscreen-in-frame window rules alist.  If @var{NAME}
+already exists as a key in the alist and @var{SHADOW} is nil, then
+@var{FUNCTION} replaces the existing value.  Otherwise @var{NAME} and
+@var{FUNCTION} are pushed onto the alist."
+  (let ((present (assoc name *fullscreen-in-frame-p-window-functions*)))
+    (if (and present (not shadow))
+        (setf (cdr present) function)
+        (push (cons name function) *fullscreen-in-frame-p-window-functions*))))
+
+(defun remove-fullscreen-in-frame-rule (name &key count)
+  "Remove rules named @var{NAME} from the fullscreen-in-frame window rules alist.
+If @var{COUNT} is NIL then all matching rules are removed, otherwise only the
+first @var{COUNT} rules are removed."
+  (setf *fullscreen-in-frame-p-window-functions*
+        (remove name *fullscreen-in-frame-p-window-functions*
+                :key #'car :count count)))
+
+(defmacro define-fullscreen-in-frame-rule (name (window-argument) &body body)
+  "Define a rule for a window to be fullscreened within the frame.  Each rule is a
+function which will be called when a window is made fullscreen.  If the rule
+returns NIL then the fullscreen window takes up the entire head, otherwise it
+takes up only its frame. Within the body of the rule @var{WINDOW-ARGUMENT} is
+bound to the window being processed."
+  `(flet ((,name (,window-argument) ,@body))
+     (add-fullscreen-in-frame-rule ',name #',name)))
+
 (defvar *mouse-focus-policy* :ignore
   "The mouse focus policy decides how the mouse affects input
 focus. Possible values are :ignore, :sloppy, and :click. :ignore means
 stumpwm ignores the mouse. :sloppy means input focus follows the
 mouse; the window that the mouse is in gets the focus. :click means
-input focus is transfered to the window you click on.")
+input focus is transfered to the window you click on.
+
+If *MOUSE-FOCUS-POLICY* holds any value other than those listed above,
+mouse focus will behave as though it contains :IGNORE")
 
 (defvar *root-click-focuses-frame* t
   "Set to NIL if you don't want clicking the root window to focus the frame
-  containing the pointer when *mouse-focus-policy* is :click.")
+  containing the pointer.")
 
 (defvar *banish-pointer-to* :head
   "Where to put the pointer when no argument is given to (banish-pointer) or the banish
@@ -1144,7 +1550,7 @@ of :error."
   (declare (ignorable if-exists))
   `(progn
      (ensure-directories-exist *data-dir*)
-     (with-open-file (,s ,(merge-pathnames *data-dir* file)
+     (with-open-file (,s ,(merge-pathnames file *data-dir*)
                          ,@keys)
        ,@body)))
 
@@ -1154,8 +1560,20 @@ of :error."
     (setf ,list (remove ,elt ,list))
     (push ,elt ,list)))
 
-(define-condition stumpwm-error (error)
-  () (:documentation "Any stumpwm specific error should inherit this."))
+(define-condition stumpwm-condition (condition)
+  ((message :initarg :message :reader warning-message))
+  (:documentation "Any stumpmwm specific condition should inherit from this.")
+  (:report (lambda (condition stream)
+            (format stream "~A~%" (warning-message condition)))))
+
+(define-condition stumpwm-error (stumpwm-condition error)
+  ()
+  (:documentation "Any stumpwm specific error should inherit this."))
+
+(define-condition stumpwm-warning (warning stumpwm-condition)
+  ()
+  (:documentation "Adds a message slot to warning. Any stumpwm specific warning
+  should inherit from this."))
 
 (defun intern1 (thing &optional (package *package*) (rt *readtable*))
   "A DWIM intern."
@@ -1174,3 +1592,29 @@ of :error."
 
 (defun command-mode-end-message ()
   (message "Exited command-mode."))
+
+(defstruct (mode-line (:constructor %make-mode-line))
+  screen
+  head
+  window
+  format
+  position
+  contents
+  cc
+  height
+  factor
+  (mode :stump)
+  on-click-bounds
+  new-bounds)
+
+(defstruct timer
+  time repeat function args)
+
+(defvar *minor-mode-maps* ()
+  "A list of minor mode keymaps. An element of the list may be a single keymap or
+a function. If an element is a function it must take a group instance and return
+a list of keymaps.")
+
+(defvar *custom-command-filters* ()
+  "A list of functions which take a group instance and a command structure, and
+return true when the command should be active.")

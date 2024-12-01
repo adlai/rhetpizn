@@ -29,59 +29,82 @@
 (defun head-by-number (screen n)
   (find n (screen-heads screen) :key 'head-number))
 
-(defun parse-xinerama-head (line)
-  (ppcre:register-groups-bind (('parse-integer number width height x y))
-                              ("^ +head #([0-9]+): ([0-9]+)x([0-9]+) @ ([0-9]+),([0-9]+)" line :sharedp t)
-                              (handler-case
-                                  (make-head :number number
-                                             :x x :y y
-                                             :width width
-                                             :height height)
-                                (parse-error ()
-                                  nil))))
+(defun screen-info-head (screen-info)
+  "Transform SCREEN-INFO structure from CLX to a HEAD structure from StumpWM."
+  (make-head :number (xinerama:screen-info-number screen-info)
+             :x (xinerama:screen-info-x screen-info)
+             :y (xinerama:screen-info-y screen-info)
+             :width (xinerama:screen-info-width screen-info)
+             :height (xinerama:screen-info-height screen-info)
+             :window nil))
+
+(defun output->head (output count)
+  (multiple-value-bind
+        (request-status _0 crtc _1 _2 status _3 _4 _5 _6 _7 name)
+      (xlib:rr-get-output-info *display* output (get-universal-time))
+    (declare (ignore _0 _1 _2 _3 _4 _5 _6 _7))
+    (when (and (eq request-status :success)
+               (eq status :connected)
+               (plusp crtc))
+      (multiple-value-bind
+            (request-status config-timestamp x y width height)
+          (xlib:rr-get-crtc-info *display* crtc (get-universal-time))
+        (declare (ignore config-timestamp))
+        (when (eq request-status :success)
+          (make-head :number count
+                     :x x
+                     :y y
+                     :width width
+                     :height height
+                     :window nil
+                     :name name))))))
+
+(defun make-screen-randr-heads (root)
+  (loop :with outputs := (nth-value 3 (xlib:rr-get-screen-resources root))
+        :for count :from 0
+        :for output :in outputs
+        :for head := (output->head output count)
+        :when head
+          :collect head))
+
 
 (defun make-screen-heads (screen root)
-  "or use xdpyinfo to query the xinerama extension, if it's enabled."
-  (or (and (xlib:query-extension *display* "XINERAMA")
-           (with-current-screen screen
-             ;; Ignore 'clone' heads.
-             (loop
-                for i = 0 then (1+ i)
-                for h in
-                (delete-duplicates
-                 (loop for i in (split-string (run-shell-command "xdpyinfo -ext XINERAMA" t))
-                    for head = (parse-xinerama-head i)
-                    when head
-                    collect head)
-                 :test #'frames-overlap-p)
-                do (setf (head-number h) i)
-                collect h)))
-      (list (make-head :number 0
-                       :x 0 :y 0
-                       :width (xlib:drawable-width root)
-                       :height (xlib:drawable-height root)
-                       :window nil))))
+  (declare (ignore screen))
+  ;; Query for whether the server supports RANDR, if so, call the
+  ;; randr version of make-screen-heads.
+  (or
+   (and (xlib:query-extension *display* "RANDR") (make-screen-randr-heads root))
+   (and (xlib:query-extension *display* "XINERAMA")
+        (xinerama:xinerama-is-active *display*)
+        (mapcar 'screen-info-head
+                (xinerama:xinerama-query-screens *display*)))
+   (list (make-head :number 0 :x 0 :y 0
+                    :width (xlib:drawable-width root)
+                    :height (xlib:drawable-height root)
+                    :window nil))))
 
 (defun copy-heads (screen)
   "Return a copy of screen's heads."
   (mapcar 'copy-frame (screen-heads screen)))
 
+(defun find-head-by-position (screen x y)
+  (dolist (head (screen-heads screen))
+    (when (and (>= x (head-x head))
+               (>= y (head-y head))
+               (<= x (+ (head-x head) (head-width head)))
+               (<= y (+ (head-y head) (head-height head))))
+      (return head))))
 
-;; Determining a frame's head based on position probably won't
-;; work with overlapping heads. Would it be better to walk
-;; up the frame tree?
-(defun frame-head (group frame)
-  (let ((center-x (+ (frame-x frame) (ash (frame-width frame) -1)))
-       (center-y (+ (frame-y frame) (ash (frame-height frame) -1))))
-    (dolist (head (screen-heads (group-screen group)))
-      (when (and
-            (>= center-x (frame-x head))
-            (>= center-y (frame-y head))
-            (<= center-x
-                (+ (frame-x head) (frame-width head)))
-            (<= center-y
-                (+ (frame-y head) (frame-height head))))
-       (return head)))))
+(defgeneric frame-head (group frame)
+  (:documentation "Return the head frame is on")
+  (:method (group frame)
+    "As a fallback, use the frame's position on the screen to return a head
+ in the same position. This can be out of sync with stump's state if was
+ moved by something else, such as X11 during an external monitor change. It
+ also doesn't work in the middle of rescaling a head."
+    (let ((center-x (+ (frame-x frame) (ash (frame-width frame) -1)))
+          (center-y (+ (frame-y frame) (ash (frame-height frame) -1))))
+      (find-head-by-position (group-screen group) center-x center-y))))
 
 (defun group-heads (group)
   (screen-heads (group-screen group)))
@@ -106,7 +129,8 @@
   "Returns a list of windows on HEAD of GROUP"
   (remove-if-not
    (lambda (w)
-     (eq head (window-head w)))
+     (handler-case (eq head (window-head w))
+       (unbound-slot () nil)))
    (group-windows group)))
 
 (defun frame-is-head (group frame)
@@ -115,38 +139,95 @@
 (defun add-head (screen head)
   (dformat 1 "Adding head #~D~%" (head-number head))
   (setf (screen-heads screen) (sort (push head (screen-heads screen)) #'<
-                                    :key (lambda (head)
-                                           (+ (* (head-x head) (screen-height (current-screen)))
-                                              (head-y head)))))
+                                    :key 'head-number))
   (dolist (group (screen-groups screen))
     (group-add-head group head)))
 
 (defun remove-head (screen head)
   (dformat 1 "Removing head #~D~%" (head-number head))
-  (when (head-mode-line head)
-    (toggle-mode-line screen head))
+  (let ((mode-line (head-mode-line head)))
+    (when mode-line
+      (destroy-mode-line mode-line)))
   (dolist (group (screen-groups screen))
     (group-remove-head group head))
   ;; Remove it from SCREEN's head list.
   (setf (screen-heads screen) (delete head (screen-heads screen))))
 
+(defun replace-head (screen old-head new-head)
+  "Replaces one head with another, while preserving its frame-tree"
+  (dformat 1 "Replacing head ~A with head ~A" old-head new-head)
+  (when-let (mode-line (head-mode-line old-head))
+    (move-mode-line-to-head mode-line new-head))
+  (dolist (group (screen-groups screen))
+    (group-replace-head screen group old-head new-head))
+  (setf (screen-heads screen)
+        (sort (append (list new-head)
+                      (remove old-head (screen-heads screen)))
+              #'<
+              :key 'head-number))
+  (scale-head screen new-head old-head)) ; opposite of its calling convention
+
 (defun scale-head (screen oh nh)
   "Scales head OH to match the dimensions of NH."
-  (dolist (group (screen-groups screen))
-    (group-resize-head group oh nh))
-  (setf (head-x oh) (head-x nh)
-        (head-y oh) (head-y nh)
-        (head-width oh) (head-width nh)
-        (head-height oh) (head-height nh)))
+  (let ((nhx (head-x nh))
+        (nhy (head-y nh))
+        (nhw (head-width nh))
+        (nhh (head-height nh)))
+    (unless (and (= (head-x oh) nhx)
+                 (= (head-y oh) nhy)
+                 (= (head-width oh) nhw)
+                 (= (head-height oh) nhh))
+      (dolist (group (screen-groups screen))
+        (group-before-resize-head group oh nh))
+      (setf (head-x oh) nhx
+            (head-y oh) nhy
+            (head-width oh) nhw
+            (head-height oh) nhh)
+      (dolist (group (screen-groups screen))
+        (group-after-resize-head group oh)))))
 
 (defun scale-screen (screen heads)
   "Scale all frames of all groups of SCREEN to match the dimensions of HEADS."
-  (let ((oheads (screen-heads screen)))
-    (dolist (h (set-difference oheads heads :test '= :key 'head-number))
-      (remove-head screen h))
-    (dolist (h (set-difference heads oheads :test '= :key 'head-number))
-      (add-head screen h))
-    (dolist (h (intersection heads oheads :test '= :key 'head-number))
-      (let ((nh (find (head-number h) heads  :test '= :key 'head-number))
-            (oh (find (head-number h) oheads :test '= :key 'head-number)))
-        (scale-head screen oh nh)))))
+  (let ((old-heads (screen-heads screen)))
+    (let* ((added-heads (set-difference heads old-heads :test '= :key 'head-number))
+           (removed-heads (set-difference old-heads heads :test '= :key 'head-number))
+           (max-change (max (length added-heads) (length removed-heads))))
+      (loop repeat max-change ; This is, unfortunately, the loop syntax for stopping at the max of two lists
+            for added-head-list = added-heads then (cdr added-head-list)
+            for added-head = (car added-head-list)
+            for removed-head-list = removed-heads then (cdr removed-head-list)
+            for removed-head = (car removed-head-list)
+            do (if added-head
+                   (if removed-head
+                       (replace-head screen removed-head added-head)
+                       (add-head screen added-head))
+                   (remove-head screen removed-head)))
+      ;; This rescales altered, but existing screens eg a screen resolution change
+      (dolist (head (intersection heads old-heads :test '= :key 'head-number))
+              (let ((new-head (find (head-number head) heads  :test '= :key 'head-number))
+                    (old-head (find (head-number head) old-heads :test '= :key 'head-number)))
+                (scale-head screen old-head new-head))))
+    (when-let ((orphaned-frames (orphaned-frames screen)))
+      (let ((group (current-group)))
+        (dformat 1 "Orphaned frames ~A found on screen ~A! Adopting into group ~A"
+                 orphaned-frames screen group)
+        (group-adopt-orphaned-windows group screen)))))
+
+(defun head-force-refresh (screen new-heads)
+  (scale-screen screen new-heads)
+  (mapc 'group-sync-all-heads (screen-groups screen))
+  (loop for new-head in new-heads
+     do (run-hook-with-args *new-head-hook* new-head screen)))
+
+(defcommand refresh-heads (&optional (screen (current-screen))) ()
+  "Refresh screens in case a monitor was connected, but a
+  ConfigureNotify event was snarfed by another program."
+  (head-force-refresh screen (make-screen-heads screen (screen-root screen))))
+
+(defun orphaned-frames (screen)
+  "Returns a list of frames on a screen not associated with any group.
+  These shouldn't exist."
+  (let ((adopted-frames (loop for group in (screen-groups screen)
+                              unless (typep group 'float-group)
+                                append (group-frames group))))
+    (set-difference (screen-frames screen) adopted-frames)))
